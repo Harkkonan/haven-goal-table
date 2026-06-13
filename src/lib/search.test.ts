@@ -67,4 +67,42 @@ describe("task search", () => {
     expect(JSON.stringify(plum)).not.toMatch(/(?:requires|specific|seed[_ ]of|optional)::/i);
     expect(searchTaskGraphs(mergedGoals, "plum seed")[0].graph.name).toBe("Plum");
   });
+
+  it("expands baked goods into ingredient preparation and oven workflows", () => {
+    const bread = generatedGoals.find((graph) => graph.name === "Bread");
+    const applePie = generatedGoals.find((graph) => graph.name === "Apple Pie");
+    const fruitPie = generatedGoals.find((graph) => graph.name === "Fruit Pie");
+    const breadRows = bread?.rows.map((row) => row.name) ?? [];
+    const applePieRows = applePie?.rows.map((row) => row.name) ?? [];
+    const fruitPieRows = fruitPie?.rows.map((row) => row.name) ?? [];
+
+    expect(breadRows).toEqual(expect.arrayContaining(["Water", "Any Flour", "Make Bread Dough", "Fuel and Light Oven", "Bake Bread"]));
+    expect(bread?.rows.some((row) => row.kind === "material" && row.name === "Bread Dough")).toBe(false);
+    expect(bread?.rows.find((row) => row.name === "Any Flour")?.method).toContain("grind");
+    expect(JSON.stringify(bread)).not.toContain("copy=");
+
+    expect(applePieRows).toEqual(expect.arrayContaining(["Red Apple", "Butter", "Make Unbaked Apple Pie", "Bake Apple Pie"]));
+    expect(fruitPieRows).toContain("Fruit or Berry");
+    expect(fruitPie?.rows.find((row) => row.name === "Fruit or Berry")?.quantity).toBe("3");
+  });
+
+  it("handles cooked-food optional ingredients, station alternatives, and nested preparation", () => {
+    const meatpie = generatedGoals.find((graph) => graph.name === "Meatpie");
+    const roastMeat = generatedGoals.find((graph) => graph.name === "Roast Meat");
+    const plumPudding = generatedGoals.find((graph) => graph.name === "Plum Pudding");
+    const plumPuddingRows = plumPudding?.rows.map((row) => row.name) ?? [];
+
+    expect(meatpie?.rows.find((row) => row.name === "Spices")?.required).toBe(false);
+    expect(roastMeat?.rows.map((row) => row.name)).toContain("Fire or Fireplace");
+    expect(roastMeat?.rows.find((row) => row.name === "Spices")?.required).toBe(false);
+    expect(roastMeat?.rows.find((row) => row.name === "Cook Roast Meat")?.dependsOn).not.toEqual(
+      expect.arrayContaining(["tool-fire-1", "tool-fireplace-2"]),
+    );
+
+    expect(plumPuddingRows).toEqual(
+      expect.arrayContaining(["Cauldron", "Dried Fruit", "Brandy", "Make Batter", "Make Plum Pudding Dough", "Bake Plum Pudding"]),
+    );
+    expect(plumPudding?.rows.find((row) => row.name === "Dried Fruit")?.method).toContain("Dry acceptable fruit");
+    expect(plumPudding?.rows.find((row) => row.name === "Brandy")?.method).toContain("Distill wine");
+  });
 });

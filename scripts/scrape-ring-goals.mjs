@@ -442,9 +442,17 @@ function extractGameMenu(content) {
   }
 
   const inner = template.slice(2, -2);
-  return splitTopLevelPipes(inner)
+  const parts = splitTopLevelPipes(inner)
     .slice(1)
     .map((part) => cleanText(part.replaceAll("$", "")))
+    .filter(Boolean);
+
+  if (parts.length === 1 && /^copy=/i.test(parts[0])) {
+    return "";
+  }
+
+  return parts
+    .map((part) => part.replace(/^copy=/i, ""))
     .filter(Boolean)
     .join(" > ");
 }
@@ -470,19 +478,24 @@ function extractRequirements(value) {
     return requirements;
   }
 
-  const regex = /\[\[(?:requires::)?([^|\]]+)(?:\|[^\]]+)?\]\]\s*(?:x\s*([0-9.]+))?/g;
+  const regex = /(?:(optional)\s*:)?\s*\[\[(?:requires::|specific::)?([^|\]]+)(?:\|[^\]]+)?\]\]\s*(?:x\s*([0-9.]+)|\(\s*([^)]+?)\s*\))?/gi;
   let match;
 
   while ((match = regex.exec(value))) {
-    const rawTitle = cleanTitle(match[1]);
+    const rawTitle = cleanTitle(match[2]);
     if (!rawTitle || rawTitle.startsWith("#")) {
       continue;
     }
 
+    const before = value.slice(Math.max(0, match.index - 18), match.index).toLowerCase();
+    const optional = Boolean(match[1]) || /optional\s*:?\s*$/.test(before);
+    const quantity = match[3] ? match[3] : match[4] ? cleanText(match[4]) : "";
+
     requirements.push({
       title: canonicalName(rawTitle),
       sourceTitle: rawTitle,
-      quantity: match[2] ? match[2] : "",
+      quantity,
+      required: !optional,
     });
   }
 
@@ -495,7 +508,16 @@ function dedupeRequirements(requirements) {
   for (const requirement of requirements) {
     const key = normalizeMaterialKey(requirement.title);
     if (!byTitle.has(key)) {
-      byTitle.set(key, requirement);
+      byTitle.set(key, { ...requirement });
+      continue;
+    }
+
+    const existing = byTitle.get(key);
+    if (requirement.required !== false) {
+      existing.required = true;
+    }
+    if (!existing.quantity && requirement.quantity) {
+      existing.quantity = requirement.quantity;
     }
   }
 
@@ -967,7 +989,610 @@ function buildPlantProductRows({ title, sourceUrl, acquisition, producerInfo }) 
   return rows;
 }
 
-function makeGoal(page, producerPagesByTitle = new Map()) {
+const COOKING_STATION_TITLES = new Set([
+  "Oven",
+  "Fire",
+  "Fireplace",
+  "Grid Iron",
+  "Frying Pan",
+  "Cauldron",
+  "Kiln",
+  "Roasting Spit",
+  "Smoke Shed",
+]);
+
+const COOKING_INTERMEDIATE_TITLES = new Set([
+  "Any Stuffing",
+  "Batter",
+]);
+
+function splitTopLevelCommas(value) {
+  const parts = [];
+  let current = "";
+  let bracketDepth = 0;
+  let braceDepth = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const pair = value.slice(index, index + 2);
+    if (pair === "[[") {
+      bracketDepth += 1;
+      current += pair;
+      index += 1;
+      continue;
+    }
+    if (pair === "]]") {
+      bracketDepth -= 1;
+      current += pair;
+      index += 1;
+      continue;
+    }
+    if (pair === "{{") {
+      braceDepth += 1;
+      current += pair;
+      index += 1;
+      continue;
+    }
+    if (pair === "}}") {
+      braceDepth -= 1;
+      current += pair;
+      index += 1;
+      continue;
+    }
+    if (value[index] === "," && bracketDepth === 0 && braceDepth === 0) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += value[index];
+  }
+
+  parts.push(current);
+  return parts;
+}
+
+function combineAlternativeRequirements(requirements) {
+  const required = requirements.some((requirement) => requirement.required !== false);
+  const quantity = [...requirements].reverse().find((requirement) => requirement.quantity)?.quantity ?? "";
+  const titles = requirements.map((requirement) => requirement.title);
+
+  return {
+    title: titles.join(" or "),
+    sourceTitle: requirements[0].sourceTitle,
+    sourceTitles: requirements.map((requirement) => requirement.sourceTitle),
+    quantity,
+    required,
+    alternatives: titles,
+  };
+}
+
+function extractRequirementGroups(value) {
+  if (!value) {
+    return [];
+  }
+
+  const requirements = [];
+  for (const segment of splitTopLevelCommas(value)) {
+    const segmentRequirements = extractRequirements(segment);
+    if (/\bor\b/i.test(segment) && segmentRequirements.length > 1) {
+      requirements.push(combineAlternativeRequirements(segmentRequirements));
+    } else {
+      requirements.push(...segmentRequirements);
+    }
+  }
+
+  return dedupeRequirements(requirements);
+}
+
+function combineCookingStations(requirements) {
+  const stations = requirements.filter((requirement) => COOKING_STATION_TITLES.has(cleanTitle(requirement.title)));
+  const others = requirements.filter((requirement) => !COOKING_STATION_TITLES.has(cleanTitle(requirement.title)));
+
+  if (stations.length <= 1) {
+    return requirements;
+  }
+
+  return [combineAlternativeRequirements(stations), ...others];
+}
+
+function requirementSourceUrl(requirement) {
+  const sourceTitle = requirement.sourceTitles?.[0] ?? requirement.sourceTitle;
+  return wikiUrl(sourceTitle);
+}
+
+function isCookingIntermediateTitle(title) {
+  const clean = cleanTitle(title);
+  return (
+    /^Unbaked\b/i.test(clean) ||
+    /\bDough$/i.test(clean) ||
+    /^Raw .*(?:Roast|Roll|Glutton)$/i.test(clean) ||
+    COOKING_INTERMEDIATE_TITLES.has(clean)
+  );
+}
+
+function isCookingSupportTitle(title) {
+  return COOKING_STATION_TITLES.has(cleanTitle(title)) || isCookingIntermediateTitle(title);
+}
+
+function isCookedFoodGoal(title, categories, toolRequirements, materialRequirements, fields = {}) {
+  const foodCategory = categories.some((category) =>
+    /^(Baked Goods|Foods|Processed Foods|Meat Dishes|Sausages|Pitbaked Goods)$/i.test(category),
+  );
+  const foodStats = Object.keys(fields).some((key) =>
+    /^(energy|hunger|sat\d*|str\d*|agi\d*|int\d*|con\d*|per\d*|cha\d*|dex\d*|wil\d*|psy\d*)$/i.test(key),
+  );
+  const usesCookingStation = toolRequirements.some((requirement) =>
+    COOKING_STATION_TITLES.has(cleanTitle(requirement.title)),
+  );
+  const hasCookingIntermediate = materialRequirements.some((requirement) => isCookingIntermediateTitle(requirement.title));
+
+  return (foodCategory || foodStats) && (usesCookingStation || hasCookingIntermediate || isCookingIntermediateTitle(title));
+}
+
+function inferCookingTools(toolRequirements, categories, materialRequirements) {
+  if (toolRequirements.length > 0) {
+    return toolRequirements;
+  }
+
+  const bakedCategory = categories.some((category) => /^(Baked Goods)$/i.test(category));
+  const bakedInput = materialRequirements.some((requirement) => isCookingIntermediateTitle(requirement.title));
+
+  if (bakedCategory && bakedInput) {
+    return [
+      {
+        title: "Oven",
+        sourceTitle: "Oven",
+        quantity: "",
+        required: true,
+      },
+    ];
+  }
+
+  return toolRequirements;
+}
+
+function cookingIngredientRoute(requirement) {
+  const key = normalizeMaterialKey(requirement.title);
+  const existingRoute = MATERIAL_ROUTES.get(key);
+  if (existingRoute) {
+    return existingRoute;
+  }
+
+  if (key.includes(" or ")) {
+    return {
+      method: `Use any valid alternative: ${requirement.alternatives?.join(", ") ?? requirement.title}`,
+      details: `${requirement.title} is an either/or ingredient group for this cooking recipe.`,
+    };
+  }
+
+  if (key === "any flour" || key.endsWith(" flour")) {
+    return {
+      method: "Grow or trade for grain seeds, then grind them with a Quern or Milling Machine",
+      details: "Flour normally comes from milling grain seeds. Recipes that say Any Flour accept qualifying flour types.",
+    };
+  }
+
+  if (key === "milk" || /milk$/.test(key)) {
+    return {
+      method: "Milk a domesticated animal or trade for milk",
+      details: "Milk is a liquid ingredient and needs a container before it can be used in cooking.",
+    };
+  }
+
+  if (key === "butter") {
+    return {
+      method: "Churn milk into butter, or trade for butter",
+      details: "Butter is a solid fat commonly used in baked goods and pie doughs.",
+    };
+  }
+
+  if (key === "curd" || key === "cheese") {
+    return {
+      method: "Use the dairy chain or trade for prepared dairy",
+      details: `${requirement.title} belongs to the dairy processing chain and is used as a prepared cooking ingredient.`,
+    };
+  }
+
+  if (key === "egg" || key.endsWith(" egg")) {
+    return {
+      method: "Collect eggs from birds or chicken coops, or trade for eggs",
+      details: "Eggs are a cooking ingredient used directly in doughs, batters, and prepared foods.",
+    };
+  }
+
+  if (key === "raw meat" || /^raw\b/.test(key) || key.includes(" meat")) {
+    return {
+      method: "Hunt or raise an animal, butcher it, and keep the raw meat",
+      details: "Raw meat quality and type can affect the cooked result. Many recipes accept several specific raw meats.",
+    };
+  }
+
+  if (key === "filet of any fish" || key.includes("fish")) {
+    return {
+      method: "Catch fish, then butcher or process it into the required fish ingredient",
+      details: "Fish-based recipes usually accept specific fish or filet categories depending on the wiki requirement.",
+    };
+  }
+
+  if (key === "dried fruit") {
+    return {
+      method: "Dry acceptable fruit or trade for dried fruit",
+      details: "Dried fruit is a prepared ingredient used before the final cooking step.",
+    };
+  }
+
+  if (key === "fruit" || key.includes("fruit") || key.includes("apple") || key.includes("berry")) {
+    return {
+      method: "Harvest, forage, grow, or trade for the fruit or berry",
+      details: "For tree and bush fruit, use the matching generated plant goal when you need the full growing chain.",
+    };
+  }
+
+  if (key === "spices") {
+    return {
+      method: "Use any valid spice, or skip this optional seasoning",
+      details: "Spices are optional in many cooked meat recipes and improve or vary the final food.",
+    };
+  }
+
+  if (key === "sweetener") {
+    return {
+      method: "Use honey or another accepted sweetener",
+      details: "Sweetener is a generic ingredient class; the exact accepted item can vary by pantry supply.",
+    };
+  }
+
+  if (key === "brandy") {
+    return {
+      method: "Distill wine in a Still, or trade for brandy",
+      details: "Brandy is an alcohol ingredient made through the wine and still chain.",
+    };
+  }
+
+  if (key === "bucket") {
+    return {
+      method: "Craft or borrow a bucket before mixing liquid ingredients",
+      details: "Some liquid preparations need a bucket held or available before the recipe can be mixed.",
+    };
+  }
+
+  if (key === "solid fat" || key === "animal fat" || key === "rendered animal fat") {
+    return {
+      method: "Render or collect fat from animal processing, or trade for it",
+      details: "Fat ingredients are usually part of the butchery and rendering chain.",
+    };
+  }
+
+  if (key === "entrails" || key === "intestines") {
+    return {
+      method: "Butcher animals and keep the entrails or intestines",
+      details: "Offal ingredients come from the butchery chain and may require the right butchering skill.",
+    };
+  }
+
+  if (key === "any onion" || key.endsWith(" onion") || key === "carrot" || key === "beetroot" || key === "turnip" || key === "cucumber") {
+    return {
+      method: "Farm, forage if applicable, or trade for the vegetable",
+      details: `${requirement.title} is a crop-style cooking ingredient.`,
+    };
+  }
+
+  if (key === "honey") {
+    return {
+      method: "Use beekeeping or trade for honey",
+      details: "Honey works as a sweet cooking ingredient and may also satisfy some sweetener needs.",
+    };
+  }
+
+  if (key === "vinegar") {
+    return {
+      method: "Ferment alcohol into vinegar, or trade for vinegar",
+      details: "Vinegar is a prepared liquid ingredient used in several cooking recipes.",
+    };
+  }
+
+  if (key === "nuts") {
+    return {
+      method: "Forage, harvest, or trade for accepted nuts",
+      details: "Nut recipes accept qualifying nut ingredients from forage or tree sources.",
+    };
+  }
+
+  if (key === "leaf") {
+    return {
+      method: "Gather leaves from valid plants or trees",
+      details: "Pitbaked recipes can use leaves as wrapping or preparation material.",
+    };
+  }
+
+  return materialRoute(requirement);
+}
+
+function cookingToolMethod(requirement) {
+  const name = requirement.title;
+
+  if (name.includes(" or ")) {
+    return `Use any listed cooking station: ${requirement.alternatives?.join(", ") ?? name}`;
+  }
+
+  if (name === "Oven") {
+    return "Use an Oven for the baking step";
+  }
+
+  if (name === "Fire" || name === "Fireplace") {
+    return `Use a lit ${name} for the cooking step`;
+  }
+
+  if (name === "Cauldron") {
+    return "Use a boiling Cauldron for the preparation step";
+  }
+
+  return `Use ${name} for the cooking step`;
+}
+
+function finalCookingVerb(toolRequirements) {
+  const stationNames = toolRequirements.flatMap((requirement) => requirement.alternatives ?? [requirement.title]);
+
+  if (stationNames.includes("Oven")) {
+    return "Bake";
+  }
+  if (stationNames.includes("Smoke Shed")) {
+    return "Smoke";
+  }
+  if (stationNames.includes("Cauldron")) {
+    return "Boil";
+  }
+  if (stationNames.some((name) => ["Fire", "Fireplace", "Grid Iron", "Frying Pan", "Kiln", "Roasting Spit"].includes(name))) {
+    return "Cook";
+  }
+  return "Make";
+}
+
+function needsFuelRow(toolRequirements) {
+  const stationNames = toolRequirements.flatMap((requirement) => requirement.alternatives ?? [requirement.title]);
+  return stationNames.some((name) => ["Oven", "Fire", "Fireplace", "Kiln"].includes(name));
+}
+
+function fuelActionLabel(toolRequirements) {
+  const stationNames = toolRequirements.flatMap((requirement) => requirement.alternatives ?? [requirement.title]);
+  if (stationNames.includes("Oven")) {
+    return "Fuel and Light Oven";
+  }
+  if (stationNames.includes("Kiln")) {
+    return "Fuel and Light Kiln";
+  }
+  return "Light Cooking Fire";
+}
+
+function buildCookedFoodRows({
+  title,
+  fields,
+  sourceUrl,
+  acquisition,
+  skillRequirements,
+  materialRequirements,
+  toolRequirements,
+  pageIndexByTitle,
+}) {
+  const rows = [];
+  const reusableRows = new Map();
+
+  function addReusableRow(row) {
+    const key = `${row.kind}:${normalizeMaterialKey(row.name)}`;
+    const existingId = reusableRows.get(key);
+    if (existingId) {
+      const existing = rows.find((candidate) => candidate.id === existingId);
+      if (existing && row.required !== false) {
+        existing.required = true;
+      }
+      return existingId;
+    }
+
+    const id = `${row.kind}-${slugify(row.name)}`;
+    reusableRows.set(key, id);
+    rows.push({
+      ...row,
+      id,
+      order: rows.length + 1,
+    });
+    return id;
+  }
+
+  function addActionRow({ id, name, required = true, dependsOn, source = SOURCE, rowSourceUrl = sourceUrl, method, details, quantity }) {
+    rows.push({
+      id,
+      kind: "action",
+      name,
+      order: rows.length + 1,
+      quantity,
+      required,
+      dependsOn,
+      source,
+      sourceUrl: rowSourceUrl,
+      method,
+      details,
+    });
+    return id;
+  }
+
+  function addSkillRows(requirements, itemTitle) {
+    return requirements.map((requirement) =>
+      addReusableRow({
+        kind: "skill",
+        name: requirement.title,
+        quantity: requirement.quantity || undefined,
+        required: requirement.required !== false,
+        dependsOn: [],
+        source: SOURCE,
+        sourceUrl: wikiUrl(requirement.sourceTitle),
+        method: `Unlock ${requirement.title} before preparing ${itemTitle}`,
+        details: `${requirement.title} is listed as a required skill for ${itemTitle}.`,
+      }),
+    );
+  }
+
+  function addToolRows(requirements, itemTitle) {
+    return requirements
+      .filter((requirement) => requirement.title !== "Hand")
+      .map((requirement) =>
+        addReusableRow({
+          kind: "tool",
+          name: requirement.title,
+          quantity: requirement.quantity || undefined,
+          required: requirement.required !== false,
+          dependsOn: [],
+          source: SOURCE,
+          sourceUrl: requirementSourceUrl(requirement),
+          method: cookingToolMethod(requirement),
+          details: `${requirement.title} is listed as a production station or tool for ${itemTitle}.`,
+        }),
+      );
+  }
+
+  function addIngredientRow(requirement, itemTitle) {
+    const route = cookingIngredientRoute(requirement);
+    return addReusableRow({
+      kind: "material",
+      name: requirement.title,
+      quantity: requirement.quantity || undefined,
+      required: requirement.required !== false,
+      dependsOn: [],
+      source: SOURCE,
+      sourceUrl: requirementSourceUrl(requirement),
+      method: route.method,
+      details: `${route.details} Needed for ${itemTitle}.`,
+    });
+  }
+
+  function requiredDependency(id, required = true) {
+    return required === false ? [] : [id];
+  }
+
+  function appendPreparedIngredient(requirement, depth = 0) {
+    const intermediateTitle = cleanTitle(requirement.sourceTitle || requirement.title);
+    const intermediatePage = pageIndexByTitle.get(intermediateTitle);
+
+    if (!intermediatePage || !isCookingIntermediateTitle(intermediateTitle) || depth > 2) {
+      const rowIdValue = addIngredientRow(requirement, title);
+      return {
+        id: rowIdValue,
+        required: requirement.required !== false,
+      };
+    }
+
+    const intermediateFields = getInfoboxFields(intermediatePage);
+    const intermediateSourceUrl = wikiUrl(intermediateTitle);
+    const intermediateSkills = extractRequirements(intermediateFields.skillreq);
+    const intermediateTools = combineCookingStations(
+      extractRequirementGroups(intermediateFields.producedby).filter((tool) => tool.title !== "Hand"),
+    );
+    const intermediateMaterials = extractRequirementGroups(intermediateFields.objectsreq);
+    const intermediateAcquisition = extractSectionSummary(intermediatePage.content, intermediateTitle);
+    const intermediateMenu = extractGameMenu(intermediatePage.content);
+    const dependencyIds = [
+      ...addSkillRows(intermediateSkills, intermediateTitle),
+      ...addToolRows(intermediateTools, intermediateTitle),
+    ];
+
+    for (const material of intermediateMaterials) {
+      const prepared = appendPreparedIngredient(material, depth + 1);
+      dependencyIds.push(...requiredDependency(prepared.id, prepared.required));
+    }
+
+    const actionId = `prepare-${slugify(intermediateTitle)}`;
+    addActionRow({
+      id: actionId,
+      name: `Make ${intermediateTitle}`,
+      dependsOn: dependencyIds,
+      rowSourceUrl: intermediateSourceUrl,
+      method: intermediateMenu || intermediateAcquisition || `Craft ${intermediateTitle} from its listed ingredients`,
+      details: `${intermediateTitle} is the prepared input used before finishing ${title}.`,
+      quantity: requirement.quantity || undefined,
+    });
+
+    return {
+      id: actionId,
+      required: requirement.required !== false,
+    };
+  }
+
+  const groupedMaterials = extractRequirementGroups(fields.objectsreq);
+  const groupedTools = combineCookingStations(toolRequirements);
+  const finalSkillIds = addSkillRows(skillRequirements, title);
+  const finalToolIds = addToolRows(groupedTools, title);
+  const finalIngredientIds = [];
+
+  for (const material of groupedMaterials.length ? groupedMaterials : materialRequirements) {
+    const prepared = appendPreparedIngredient(material);
+    finalIngredientIds.push(...requiredDependency(prepared.id, prepared.required));
+  }
+
+  let fuelActionId = "";
+  if (needsFuelRow(groupedTools)) {
+    const fuelMaterialId = addReusableRow({
+      kind: "material",
+      name: "Branch",
+      quantity: groupedTools.some((requirement) => (requirement.alternatives ?? [requirement.title]).includes("Oven"))
+        ? "4"
+        : undefined,
+      required: true,
+      dependsOn: [],
+      source: SOURCE,
+      sourceUrl: "https://ringofbrodgar.com/wiki/Branch",
+      method: "Pick branches from trees or split blocks of wood",
+      details: "Branches are the default early fuel for fires, fireplaces, kilns, and ovens.",
+    });
+    fuelActionId = addActionRow({
+      id: "fuel-cooking-station",
+      name: fuelActionLabel(groupedTools),
+      dependsOn: [...finalToolIds, fuelMaterialId],
+      method: "Add fuel and light the cooking station before finishing the food",
+      details: "Most baked and fire-cooked foods need a lit station before the recipe completes.",
+    });
+  }
+
+  if (acquisition) {
+    rows.push({
+      id: "wiki-cooking-note",
+      kind: "note",
+      name: "Wiki Cooking Notes",
+      order: rows.length + 1,
+      quantity: "Ring of Brodgar source",
+      required: false,
+      dependsOn: [],
+      source: SOURCE,
+      sourceUrl,
+      method: acquisition,
+      details: `${acquisition} Source: ${sourceUrl}`,
+    });
+  }
+
+  const verb = finalCookingVerb(groupedTools);
+  const finalActionId = `finish-${slugify(title)}`;
+  addActionRow({
+    id: finalActionId,
+    name: `${verb} ${title}`,
+    dependsOn: [
+      ...finalSkillIds,
+      ...finalToolIds,
+      ...finalIngredientIds,
+      ...(fuelActionId ? [fuelActionId] : []),
+    ],
+    method: `${verb} ${title} using the prepared ingredients and cooking station`,
+    details: `${title} is the finished cooked food from the recipe chain.`,
+  });
+
+  addActionRow({
+    id: "goal-complete",
+    name: `Get ${title}`,
+    dependsOn: [finalActionId],
+    method: `Keep, store, or eat the finished ${title}`,
+    details: `${SOURCE} lists ${title} as a cooked food goal.`,
+  });
+
+  return rows;
+}
+
+function makeGoal(page, pageIndexByTitle = new Map()) {
   const infobox = extractTemplate(page.content, "infobox");
   if (!infobox) {
     return null;
@@ -987,7 +1612,7 @@ function makeGoal(page, producerPagesByTitle = new Map()) {
     : extractRequirements(fields.skillreq);
   const materialRequirements = extractRequirements(fields.objectsreq);
   const toolRequirements = extractRequirements(fields.producedby).filter((requirement) => requirement.title !== "Hand");
-  const plantProducerInfo = findPlantProducer(toolRequirements, producerPagesByTitle);
+  const plantProducerInfo = findPlantProducer(toolRequirements, pageIndexByTitle);
 
   if (plantProducerInfo) {
     const plantRows = buildPlantProductRows({
@@ -1017,6 +1642,45 @@ function makeGoal(page, producerPagesByTitle = new Map()) {
     };
   }
 
+  if (isCookedFoodGoal(title, categories, toolRequirements, materialRequirements, fields)) {
+    const cookingToolRequirements = combineCookingStations(inferCookingTools(toolRequirements, categories, materialRequirements));
+    const cookedRows = buildCookedFoodRows({
+      title,
+      fields,
+      sourceUrl,
+      acquisition,
+      skillRequirements,
+      materialRequirements,
+      toolRequirements: cookingToolRequirements,
+      pageIndexByTitle,
+    });
+
+    return {
+      id: `ring-${slugify(title)}`,
+      name: title,
+      category: categoryForGoal(categories, "Cooked food"),
+      purpose: `${finalCookingVerb(cookingToolRequirements)} ${title} through its ingredient preparation and cooking chain.`,
+      aliases: [
+        ...new Set([
+          ...aliasesForGoal(title, categories, false),
+          `cook ${title.toLowerCase()}`,
+          `bake ${title.toLowerCase()}`,
+          `${title.toLowerCase()} recipe`,
+          ...materialRequirements.map((requirement) => requirement.title.toLowerCase()),
+        ]),
+      ].slice(0, 16),
+      searchHints: [
+        menuPath,
+        cleanText(fields.skillreq ?? ""),
+        cleanText(fields.objectsreq ?? ""),
+        cleanText(fields.producedby ?? ""),
+        acquisition,
+        ...categories,
+      ].filter(Boolean).slice(0, 10),
+      rows: cookedRows,
+    };
+  }
+
   const rows = [];
 
   for (const requirement of skillRequirements) {
@@ -1027,7 +1691,7 @@ function makeGoal(page, producerPagesByTitle = new Map()) {
       name: requirement.title,
       order: rows.length + 1,
       quantity: requirement.quantity || undefined,
-      required: true,
+      required: requirement.required !== false,
       dependsOn: [],
       source: SOURCE,
       sourceUrl: wikiUrl(requirement.sourceTitle),
@@ -1044,7 +1708,7 @@ function makeGoal(page, producerPagesByTitle = new Map()) {
       name: requirement.title,
       order: rows.length + 1,
       quantity: requirement.quantity || undefined,
-      required: true,
+      required: requirement.required !== false,
       dependsOn: [],
       source: SOURCE,
       sourceUrl: wikiUrl(requirement.sourceTitle),
@@ -1062,7 +1726,7 @@ function makeGoal(page, producerPagesByTitle = new Map()) {
       name: requirement.title,
       order: rows.length + 1,
       quantity: requirement.quantity || undefined,
-      required: true,
+      required: requirement.required !== false,
       dependsOn: [],
       source: SOURCE,
       sourceUrl: wikiUrl(requirement.sourceTitle),
@@ -1123,6 +1787,60 @@ function makeGoal(page, producerPagesByTitle = new Map()) {
   };
 }
 
+function requirementSourceTitles(requirement) {
+  return requirement.sourceTitles ?? [requirement.sourceTitle];
+}
+
+async function getCookingSupportPages(basePages) {
+  const supportPages = [];
+  const pageIndexByTitle = new Map(basePages.map((page) => [cleanTitle(page.title), page]));
+
+  for (let depth = 0; depth < 3; depth += 1) {
+    const titlesToFetch = new Set();
+
+    for (const page of [...basePages, ...supportPages]) {
+      const title = cleanTitle(page.title);
+      const fields = getInfoboxFields(page);
+      const categories = extractCategories(page.content);
+      const materialRequirements = extractRequirementGroups(fields.objectsreq);
+      const toolRequirements = extractRequirementGroups(fields.producedby);
+      const shouldExpand =
+        isCookingIntermediateTitle(title) ||
+        isCookedFoodGoal(title, categories, toolRequirements, materialRequirements, fields);
+
+      if (!shouldExpand) {
+        continue;
+      }
+
+      for (const requirement of [...materialRequirements, ...toolRequirements]) {
+        for (const sourceTitle of requirementSourceTitles(requirement)) {
+          const cleanSourceTitle = cleanTitle(sourceTitle);
+          if (cleanSourceTitle && isCookingSupportTitle(cleanSourceTitle) && !pageIndexByTitle.has(cleanSourceTitle)) {
+            titlesToFetch.add(cleanSourceTitle);
+          }
+        }
+      }
+    }
+
+    if (titlesToFetch.size === 0) {
+      break;
+    }
+
+    const fetchedPages = await getPages([...titlesToFetch].sort((a, b) => a.localeCompare(b)));
+    const newPages = fetchedPages.filter((page) => !pageIndexByTitle.has(cleanTitle(page.title)));
+    if (newPages.length === 0) {
+      break;
+    }
+
+    for (const page of newPages) {
+      pageIndexByTitle.set(cleanTitle(page.title), page);
+      supportPages.push(page);
+    }
+  }
+
+  return supportPages;
+}
+
 async function main() {
   const titlesByCategory = new Map();
   const allTitles = new Set();
@@ -1136,9 +1854,11 @@ async function main() {
   }
 
   const pages = await getPages([...allTitles].sort((a, b) => a.localeCompare(b)));
+  const cookingSupportPages = await getCookingSupportPages(pages);
+  const knownPages = [...pages, ...cookingSupportPages];
   const producerTitles = new Set();
 
-  for (const page of pages) {
+  for (const page of knownPages) {
     const fields = getInfoboxFields(page);
     for (const requirement of extractRequirements(fields.producedby)) {
       if (isTreeOrBushTitle(requirement.title)) {
@@ -1147,17 +1867,17 @@ async function main() {
     }
   }
 
-  const pageTitles = new Set(pages.map((page) => cleanTitle(page.title)));
+  const pageTitles = new Set(knownPages.map((page) => cleanTitle(page.title)));
   const producerPages = await getPages(
     [...producerTitles]
       .filter((title) => title && !pageTitles.has(title))
       .sort((a, b) => a.localeCompare(b)),
   );
-  const producerPagesByTitle = new Map(
-    [...pages, ...producerPages].map((page) => [cleanTitle(page.title), page]),
+  const pageIndexByTitle = new Map(
+    [...knownPages, ...producerPages].map((page) => [cleanTitle(page.title), page]),
   );
   const goals = pages
-    .map((page) => makeGoal(page, producerPagesByTitle))
+    .map((page) => makeGoal(page, pageIndexByTitle))
     .filter(Boolean)
     .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
 
@@ -1169,6 +1889,7 @@ async function main() {
     categories: CATEGORY_SEEDS,
     categoryCounts: Object.fromEntries(titlesByCategory),
     plantProducerCount: producerPages.length,
+    cookingSupportCount: cookingSupportPages.length,
     goalCount: goals.length,
     goals,
   };
