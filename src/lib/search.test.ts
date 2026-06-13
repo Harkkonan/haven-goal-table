@@ -21,4 +21,12 @@ describe("task search", () => {
 
     expect(best.graph.id).toBe("wilderness-beacon");
   });
+
+  it("finds core starter catalog goals", () => {
+    expect(searchTaskGraphs(taskGraphs, "claim land")[0].graph.id).toBe("personal-claim");
+    expect(searchTaskGraphs(taskGraphs, "build palisade")[0].graph.id).toBe("palisade");
+    expect(searchTaskGraphs(taskGraphs, "cross river")[0].graph.id).toBe("starter-boat");
+    expect(searchTaskGraphs(taskGraphs, "make leather")[0].graph.id).toBe("leather-production");
+    expect(searchTaskGraphs(taskGraphs, "start mining")[0].graph.id).toBe("mine-hole");
+  });
 });

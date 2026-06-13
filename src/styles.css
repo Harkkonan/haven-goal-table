@@ -155,7 +155,10 @@ button {
 .task-list {
   display: grid;
   gap: 9px;
+  max-height: 360px;
   margin-top: 12px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .task-list .task-card {

@@ -6,6 +6,8 @@ The first task graph is `Wilderness Beacon`, the friend-spawn structure. The app
 
 Search is intent-aware for the seeded plans. For example, `friend spawn totem` maps to `Wilderness Beacon`, `cut 100 trees down` maps to `Tree Felling Run`, and `build tier 3 home` maps to `Great Hall`.
 
+The catalog also includes source-backed starter outlines for common early goals such as claiming land, building a palisade, crossing rivers, starting mining, making leather, farming crops, building a cabin, adding cupboards, hauling with carts, cooking at a fireplace, and planning a Stonestead.
+
 ## Run
 
 ```powershell

@@ -1,4 +1,5 @@
 import type { TaskGraph } from "../types";
+import { starterCatalogGraphs } from "./starterCatalog";
 
 const ROB = "Ring of Brodgar";
 
@@ -764,4 +765,5 @@ export const taskGraphs: TaskGraph[] = [
       },
     ],
   },
+  ...starterCatalogGraphs,
 ];
