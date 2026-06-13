@@ -43,4 +43,13 @@ describe("task search", () => {
     expect(searchTaskGraphs(mergedGoals, "build oven")[0].graph.name).toBe("Oven");
     expect(searchTaskGraphs(mergedGoals, "learn baking")[0].graph.name).toBe("Baking");
   });
+
+  it("keeps generated wiki acquisition notes visible and linked", () => {
+    const antQueen = generatedGoals.find((graph) => graph.name === "Ant Queen");
+    const note = antQueen?.rows.find((row) => row.name === "Wiki Acquisition Notes");
+
+    expect(note?.quantity).toBe("Ring of Brodgar source");
+    expect(note?.method).toContain("Ant Hill");
+    expect(note?.sourceUrl).toBe("https://ringofbrodgar.com/wiki/Ant_Queen");
+  });
 });

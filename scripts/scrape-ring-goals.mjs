@@ -700,12 +700,13 @@ function makeGoal(page) {
       kind: "note",
       name: "Wiki Acquisition Notes",
       order: rows.length + 1,
+      quantity: "Ring of Brodgar source",
       required: false,
       dependsOn: [],
       source: SOURCE,
       sourceUrl,
-      method: "Review source page notes",
-      details: acquisition,
+      method: acquisition,
+      details: `${acquisition} Source: ${sourceUrl}`,
     });
   }
 

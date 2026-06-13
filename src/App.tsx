@@ -129,6 +129,26 @@ function getTaskCode(graph: TaskGraph) {
     .toUpperCase();
 }
 
+function getDetailPrimary(row: RequirementView) {
+  if (row.quantity) {
+    return row.quantity;
+  }
+
+  if (row.lpCost) {
+    return `${row.lpCost} LP`;
+  }
+
+  if (row.kind === "note" && row.sourceUrl) {
+    return "Source note";
+  }
+
+  return "-";
+}
+
+function isWikiAcquisitionNote(row: RequirementView) {
+  return row.name === "Wiki Acquisition Notes";
+}
+
 function CompletionButton({
   row,
   onToggle,
@@ -443,8 +463,20 @@ function LogicTable({
                   </div>
                 </td>
                 <td className="detail-cell">
-                  <strong>{row.quantity ?? (row.lpCost ? `${row.lpCost} LP` : "-")}</strong>
+                  <strong>{getDetailPrimary(row)}</strong>
                   <span>{row.method}</span>
+                  {isWikiAcquisitionNote(row) && row.sourceUrl ? (
+                    <a
+                      className="inline-source-link"
+                      href={row.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      Open source
+                      <ExternalLink size={12} />
+                    </a>
+                  ) : null}
                 </td>
                 <td>
                   <StatusPill status={row.status} />
