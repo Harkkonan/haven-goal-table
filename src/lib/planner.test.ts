@@ -27,4 +27,24 @@ describe("planner graph", () => {
     expect(progress.complete).toBe(2);
     expect(progress.total).toBeGreaterThan(progress.complete);
   });
+
+  it("models Stonestead materials as production steps instead of one bucket", () => {
+    const graph = taskGraphs.find((task) => task.id === "stonestead");
+
+    expect(graph).toBeDefined();
+    expect(graph?.rows.find((row) => row.id === "materials")).toBeUndefined();
+    expect(graph?.rows.find((row) => row.id === "stone-axe")?.kind).toBe("tool");
+    expect(graph?.rows.find((row) => row.id === "bone-saw")?.kind).toBe("tool");
+    expect(graph?.rows.find((row) => row.id === "boards")?.method).toContain("Make boards");
+    expect(graph?.rows.find((row) => row.id === "blocks")?.method).toContain("axe");
+    expect(graph?.rows.find((row) => row.id === "build")?.dependsOn).toEqual([
+      "carpentry",
+      "boards",
+      "blocks",
+      "stone",
+      "thatching",
+      "metal-bars",
+      "build-site",
+    ]);
+  });
 });
