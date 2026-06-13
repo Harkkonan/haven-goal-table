@@ -28,6 +28,7 @@ import {
   getUnlockNames,
 } from "./lib/planner";
 import { searchTaskGraphs } from "./lib/search";
+import { getSkillPrerequisiteMap, getSkillPrerequisites } from "./lib/skillPrerequisites";
 import type { RequirementView, RowKind, RowStatus, TaskGraph, TaskSearchResult } from "./types";
 
 const STORAGE_KEY = "haven-goal-table-completed";
@@ -164,6 +165,52 @@ function CompletionButton({
     >
       <Icon size={18} />
     </button>
+  );
+}
+
+function dependencyKey(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function DependsCell({
+  row,
+  rowsById,
+  skillPrerequisitesByName,
+}: {
+  row: RequirementView;
+  rowsById: Map<string, RequirementView>;
+  skillPrerequisitesByName: Map<string, string[]>;
+}) {
+  const dependencyNames = row.dependsOn.map((id) => rowsById.get(id)?.name ?? id);
+  const skillPrerequisiteNames = row.kind === "skill" ? getSkillPrerequisites(row.name, skillPrerequisitesByName) : [];
+  const skillPrerequisiteKeys = new Set(skillPrerequisiteNames.map(dependencyKey));
+  const planOnlyDependencies = dependencyNames.filter((name) => !skillPrerequisiteKeys.has(dependencyKey(name)));
+  const hasSkillPrerequisites = skillPrerequisiteNames.length > 0;
+  const hasPlanDependencies = planOnlyDependencies.length > 0;
+
+  if (!hasSkillPrerequisites && dependencyNames.length === 0) {
+    return <td className="depends-cell">-</td>;
+  }
+
+  return (
+    <td className="depends-cell">
+      {hasSkillPrerequisites ? (
+        <span className="skill-prereq-line">
+          <strong>Skill prereqs: </strong>
+          {skillPrerequisiteNames.join(", ")}
+        </span>
+      ) : null}
+      {hasPlanDependencies ? (
+        <span>
+          {hasSkillPrerequisites ? <strong>Plan deps: </strong> : null}
+          {planOnlyDependencies.join(", ")}
+        </span>
+      ) : null}
+    </td>
   );
 }
 
@@ -391,12 +438,14 @@ function LogicTable({
   selectedRowId,
   setSelectedRowId,
   toggleCompleted,
+  skillPrerequisitesByName,
 }: {
   rows: RequirementView[];
   allRows: RequirementView[];
   selectedRowId: string;
   setSelectedRowId: (rowId: string) => void;
   toggleCompleted: (rowId: string) => void;
+  skillPrerequisitesByName: Map<string, string[]>;
 }) {
   const rowsById = useMemo(() => getRowMap(allRows), [allRows]);
 
@@ -477,11 +526,7 @@ function LogicTable({
                 <td>
                   <StatusPill status={row.status} />
                 </td>
-                <td className="depends-cell">
-                  {row.dependsOn.length > 0
-                    ? row.dependsOn.map((id) => rowsById.get(id)?.name ?? id).join(", ")
-                    : "-"}
-                </td>
+                <DependsCell row={row} rowsById={rowsById} skillPrerequisitesByName={skillPrerequisitesByName} />
               </tr>
             ))}
           </tbody>
@@ -634,6 +679,7 @@ export function App() {
   const [statusFilter, setStatusFilter] = useState<RowStatus | "all">("all");
   const [kindFilter, setKindFilter] = useState<RowKind | "all">("all");
   const taskSearchResults = useMemo(() => searchTaskGraphs(graphs, query), [graphs, query]);
+  const skillPrerequisitesByName = useMemo(() => getSkillPrerequisiteMap(graphs), [graphs]);
 
   const handleSelectTask = (taskId: string) => {
     setSelectedTaskId(taskId);
@@ -735,6 +781,7 @@ export function App() {
           selectedRowId={selectedRow.id}
           setSelectedRowId={setSelectedRowId}
           toggleCompleted={toggleCompleted}
+          skillPrerequisitesByName={skillPrerequisitesByName}
         />
       </main>
       <SummaryPanel graph={graph} rows={rows} selectedRow={selectedRow} toggleCompleted={toggleCompleted} />

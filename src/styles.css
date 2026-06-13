@@ -753,12 +753,32 @@ button {
 }
 
 .detail-cell span,
-.depends-cell {
+.depends-cell,
+.depends-cell span {
   display: block;
   margin-top: 2px;
   color: #515445;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.depends-cell {
+  display: table-cell;
+}
+
+.depends-cell span:first-child {
+  margin-top: 0;
+}
+
+.depends-cell strong {
+  display: inline;
+  color: #2f4326;
+  font-size: 12px;
+  line-height: inherit;
+}
+
+.skill-prereq-line {
+  color: #345c2b;
 }
 
 .inline-source-link {

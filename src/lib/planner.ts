@@ -1,6 +1,6 @@
 import type { MaterialTotal, RequirementRow, RequirementView, RowStatus, TaskGraph } from "../types";
 
-export function getRowMap(rows: RequirementRow[]) {
+export function getRowMap<T extends RequirementRow>(rows: T[]) {
   return new Map(rows.map((row) => [row.id, row]));
 }
 
