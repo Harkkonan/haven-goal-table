@@ -48,6 +48,16 @@ button {
   cursor: pointer;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .app-frame {
   display: grid;
   grid-template-columns: 292px minmax(620px, 1fr) 330px;

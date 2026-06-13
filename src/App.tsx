@@ -274,10 +274,14 @@ function Sidebar({
           <h2>Filters</h2>
           <Filter size={15} />
         </div>
-        <label className="select-label">
+        <label className="select-label" htmlFor="status-filter">
           State
           <span>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as RowStatus | "all")}>
+            <select
+              id="status-filter"
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as RowStatus | "all")}
+            >
               <option value="all">All states</option>
               <option value="ready">Ready</option>
               <option value="blocked">Blocked</option>
@@ -287,10 +291,14 @@ function Sidebar({
             <ChevronDown size={16} />
           </span>
         </label>
-        <label className="select-label">
+        <label className="select-label" htmlFor="kind-filter">
           Type
           <span>
-            <select value={kindFilter} onChange={(event) => setKindFilter(event.target.value as RowKind | "all")}>
+            <select
+              id="kind-filter"
+              value={kindFilter}
+              onChange={(event) => setKindFilter(event.target.value as RowKind | "all")}
+            >
               <option value="all">All types</option>
               <option value="skill">Skills</option>
               <option value="tool">Tools</option>
@@ -348,9 +356,11 @@ function TopBar({
         <span>{graph.name}</span>
         <ChevronDown size={18} />
       </div>
-      <label className="search-box">
+      <label className="search-box" htmlFor="goal-search">
+        <span className="sr-only">Search goals, aliases, skills, and items</span>
         <Search size={18} />
         <input
+          id="goal-search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search goals, aliases, skills, items..."
