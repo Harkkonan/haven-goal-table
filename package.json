@@ -1,11 +1,12 @@
 {
-  "name": "haven-task-table",
+  "name": "haven-goal-table",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "scrape:goals": "node scripts/scrape-ring-goals.mjs",
     "test": "vitest run",
     "preview": "vite preview --host 127.0.0.1"
   },

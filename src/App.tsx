@@ -17,7 +17,8 @@ import {
   Table2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { taskGraphs } from "./data/taskGraph";
+import { loadRingGoalCatalog } from "./data/generatedGoals";
+import { mergeGoalGraphs, taskGraphs as initialGoalGraphs } from "./data/taskGraph";
 import {
   decorateRows,
   getMaterialTotals,
@@ -29,7 +30,7 @@ import {
 import { searchTaskGraphs } from "./lib/search";
 import type { RequirementView, RowKind, RowStatus, TaskGraph, TaskSearchResult } from "./types";
 
-const STORAGE_KEY = "haven-task-table-completed";
+const STORAGE_KEY = "haven-goal-table-completed";
 
 const statusLabels: Record<RowStatus, string> = {
   complete: "Complete",
@@ -176,14 +177,14 @@ function Sidebar({
       <div className="brand">
         <AppMark />
         <div>
-          <h1>Haven Task Table</h1>
+          <h1>Haven Goal Table</h1>
           <p>Plan - Calculate - Complete</p>
         </div>
       </div>
 
       <section className="side-section">
         <div className="section-title-row">
-          <h2>Tasks</h2>
+          <h2>Goals</h2>
           <span>{progress.percent}%</span>
         </div>
         <div className="task-list">
@@ -331,7 +332,7 @@ function TaskSearchPanel({
       <div className="search-results-heading">
         <div>
           <Table2 size={18} />
-          <h2>Task Matches</h2>
+          <h2>Goal Matches</h2>
         </div>
         <span>{visibleResults.length} found</span>
       </div>
@@ -360,7 +361,7 @@ function TaskSearchPanel({
         </div>
       ) : (
         <div className="empty-search">
-          <strong>No task match yet</strong>
+          <strong>No goal match yet</strong>
           <span>The current table still filters by the text you entered.</span>
         </div>
       )}
@@ -405,7 +406,7 @@ function LogicTable({
               <th className="check-col" />
               <th>#</th>
               <th>Type</th>
-              <th>Task / Requirement</th>
+              <th>Goal / Requirement</th>
               <th>Details</th>
               <th>Status</th>
               <th>Depends On</th>
@@ -489,7 +490,7 @@ function SummaryPanel({
 
   const exportPlan = () => {
     const plan = {
-      task: graph.name,
+      goal: graph.name,
       exportedAt: new Date().toISOString(),
       rows: rows.map(({ status, blockerIds, ...row }) => ({
         ...row,
@@ -545,7 +546,7 @@ function SummaryPanel({
             ))}
           </ul>
         ) : (
-          <p className="quiet-text">No direct unlocks in this task graph.</p>
+          <p className="quiet-text">No direct unlocks in this goal graph.</p>
         )}
       </section>
 
@@ -595,15 +596,16 @@ function SummaryPanel({
 }
 
 export function App() {
-  const [selectedTaskId, setSelectedTaskId] = useState(taskGraphs[0].id);
-  const graph = taskGraphs.find((task) => task.id === selectedTaskId) ?? taskGraphs[0];
+  const [graphs, setGraphs] = useState(initialGoalGraphs);
+  const [selectedTaskId, setSelectedTaskId] = useState(initialGoalGraphs[0].id);
+  const graph = graphs.find((task) => task.id === selectedTaskId) ?? graphs[0] ?? initialGoalGraphs[0];
   const { completedIds, toggleCompleted, resetCompleted } = useCompletedRows(graph.id);
   const rows = useMemo(() => decorateRows(graph, completedIds), [completedIds, graph]);
   const [selectedRowId, setSelectedRowId] = useState(rows[0]?.id ?? "");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<RowStatus | "all">("all");
   const [kindFilter, setKindFilter] = useState<RowKind | "all">("all");
-  const taskSearchResults = useMemo(() => searchTaskGraphs(taskGraphs, query), [query]);
+  const taskSearchResults = useMemo(() => searchTaskGraphs(graphs, query), [graphs, query]);
 
   const handleSelectTask = (taskId: string) => {
     setSelectedTaskId(taskId);
@@ -618,6 +620,24 @@ export function App() {
       setSelectedRowId(rows[0]?.id ?? "");
     }
   }, [rows, selectedRowId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    loadRingGoalCatalog()
+      .then((catalog) => {
+        if (!cancelled) {
+          setGraphs(mergeGoalGraphs(catalog.goals));
+        }
+      })
+      .catch((error: unknown) => {
+        console.warn("Ring of Brodgar generated goal catalog could not be loaded.", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const visibleRows = rows.filter((row) => {
     const haystack = `${row.name} ${row.method} ${row.details} ${row.source}`.toLowerCase();
@@ -634,7 +654,7 @@ export function App() {
   return (
     <div className="app-frame">
       <Sidebar
-        graphs={taskGraphs}
+        graphs={graphs}
         selectedTaskId={selectedTaskId}
         onSelectTask={handleSelectTask}
         progress={progress}

@@ -106,7 +106,10 @@ function getPhraseMatches(graph: TaskGraph, normalizedQuery: string) {
   return phrases
     .map(normalize)
     .filter((phrase) => phrase.length > 0)
-    .filter((phrase) => phrase.includes(normalizedQuery) || normalizedQuery.includes(phrase));
+    .filter((phrase) => {
+      const phraseIsMultiWord = phrase.includes(" ");
+      return phrase.includes(normalizedQuery) || (phraseIsMultiWord && normalizedQuery.includes(phrase));
+    });
 }
 
 export function searchTaskGraphs(graphs: TaskGraph[], query: string): TaskSearchResult[] {
@@ -131,7 +134,7 @@ export function searchTaskGraphs(graphs: TaskGraph[], query: string): TaskSearch
       let score = 0;
 
       for (const phrase of phraseMatches) {
-        score += phrase === normalizedQuery ? 90 : 45;
+        score += phrase === normalizedQuery ? 120 : 25;
         matchedTerms.add(phrase);
       }
 

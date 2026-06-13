@@ -3,7 +3,27 @@ import { starterCatalogGraphs } from "./starterCatalog";
 
 const ROB = "Ring of Brodgar";
 
-export const taskGraphs: TaskGraph[] = [
+function normalizeGoalName(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function uniqueGoals(graphs: TaskGraph[]) {
+  const seen = new Set<string>();
+  return graphs.filter((graph) => {
+    const key = normalizeGoalName(graph.name);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+export const curatedGoalGraphs: TaskGraph[] = [
   {
     id: "wilderness-beacon",
     name: "Wilderness Beacon",
@@ -767,3 +787,9 @@ export const taskGraphs: TaskGraph[] = [
   },
   ...starterCatalogGraphs,
 ];
+
+export function mergeGoalGraphs(generatedGoals: TaskGraph[] = []) {
+  return uniqueGoals([...curatedGoalGraphs, ...generatedGoals]);
+}
+
+export const taskGraphs: TaskGraph[] = mergeGoalGraphs();

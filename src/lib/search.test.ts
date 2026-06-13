@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
+import generatedCatalog from "../data/generated/ringGoals.json";
+import { mergeGoalGraphs } from "../data/taskGraph";
 import { taskGraphs } from "../data/taskGraph";
 import { searchTaskGraphs } from "./search";
+import type { TaskGraph } from "../types";
+
+const generatedGoals = (generatedCatalog as { goals: TaskGraph[] }).goals;
 
 describe("task search", () => {
   it("maps tree cutting phrasing to the tree felling plan", () => {
@@ -28,5 +33,14 @@ describe("task search", () => {
     expect(searchTaskGraphs(taskGraphs, "cross river")[0].graph.id).toBe("starter-boat");
     expect(searchTaskGraphs(taskGraphs, "make leather")[0].graph.id).toBe("leather-production");
     expect(searchTaskGraphs(taskGraphs, "start mining")[0].graph.id).toBe("mine-hole");
+  });
+
+  it("includes the generated Ring of Brodgar goal catalog", () => {
+    const mergedGoals = mergeGoalGraphs(generatedGoals);
+
+    expect(mergedGoals.length).toBeGreaterThan(1000);
+    expect(mergedGoals.some((graph) => graph.id === "ring-oven")).toBe(true);
+    expect(searchTaskGraphs(mergedGoals, "build oven")[0].graph.name).toBe("Oven");
+    expect(searchTaskGraphs(mergedGoals, "learn baking")[0].graph.name).toBe("Baking");
   });
 });
