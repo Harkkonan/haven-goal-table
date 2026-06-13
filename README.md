@@ -4,6 +4,8 @@ A local companion calculator for Haven & Hearth task planning.
 
 The first task graph is `Wilderness Beacon`, the friend-spawn structure. The app shows the skill order, materials, tools, dependencies, ready/blocked state, and material summary in a logic-table layout.
 
+Search is intent-aware for the seeded plans. For example, `friend spawn totem` maps to `Wilderness Beacon`, `cut 100 trees down` maps to `Tree Felling Run`, and `build tier 3 home` maps to `Great Hall`.
+
 ## Run
 
 ```powershell

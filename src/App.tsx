@@ -26,7 +26,8 @@ import {
   getRowMap,
   getUnlockNames,
 } from "./lib/planner";
-import type { RequirementView, RowKind, RowStatus, TaskGraph } from "./types";
+import { searchTaskGraphs } from "./lib/search";
+import type { RequirementView, RowKind, RowStatus, TaskGraph, TaskSearchResult } from "./types";
 
 const STORAGE_KEY = "haven-task-table-completed";
 
@@ -118,6 +119,15 @@ function KindBadge({ kind }: { kind: RowKind }) {
   );
 }
 
+function getTaskCode(graph: TaskGraph) {
+  return graph.name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 3)
+    .toUpperCase();
+}
+
 function CompletionButton({
   row,
   onToggle,
@@ -141,7 +151,9 @@ function CompletionButton({
 }
 
 function Sidebar({
-  graph,
+  graphs,
+  selectedTaskId,
+  onSelectTask,
   progress,
   nextRows,
   statusFilter,
@@ -149,7 +161,9 @@ function Sidebar({
   kindFilter,
   setKindFilter,
 }: {
-  graph: TaskGraph;
+  graphs: TaskGraph[];
+  selectedTaskId: string;
+  onSelectTask: (taskId: string) => void;
   progress: ReturnType<typeof getProgress>;
   nextRows: RequirementView[];
   statusFilter: RowStatus | "all";
@@ -169,17 +183,26 @@ function Sidebar({
 
       <section className="side-section">
         <div className="section-title-row">
-          <h2>Task</h2>
+          <h2>Tasks</h2>
           <span>{progress.percent}%</span>
         </div>
-        <button type="button" className="task-card is-active">
-          <span className="task-icon">WB</span>
-          <span>
-            <strong>{graph.name}</strong>
-            <small>{graph.purpose}</small>
-          </span>
-          <span className="task-dot" />
-        </button>
+        <div className="task-list">
+          {graphs.map((task) => (
+            <button
+              key={task.id}
+              type="button"
+              className={`task-card ${task.id === selectedTaskId ? "is-active" : ""}`}
+              onClick={() => onSelectTask(task.id)}
+            >
+              <span className="task-icon">{getTaskCode(task)}</span>
+              <span>
+                <strong>{task.name}</strong>
+                <small>{task.category}</small>
+              </span>
+              {task.id === selectedTaskId ? <span className="task-dot" /> : null}
+            </button>
+          ))}
+        </div>
       </section>
 
       <section className="side-section">
@@ -266,7 +289,7 @@ function TopBar({
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search tasks, skills, items..."
+          placeholder="Search goals, aliases, skills, items..."
         />
       </label>
       <div className="progress-pack">
@@ -282,6 +305,66 @@ function TopBar({
         <RotateCcw size={18} />
       </button>
     </header>
+  );
+}
+
+function TaskSearchPanel({
+  query,
+  results,
+  selectedTaskId,
+  onSelectTask,
+}: {
+  query: string;
+  results: TaskSearchResult[];
+  selectedTaskId: string;
+  onSelectTask: (taskId: string) => void;
+}) {
+  if (!query.trim()) {
+    return null;
+  }
+
+  const strongestScore = results[0]?.score ?? 0;
+  const visibleResults = results.filter((result) => result.score >= Math.max(18, strongestScore * 0.35)).slice(0, 3);
+
+  return (
+    <section className="search-results-panel">
+      <div className="search-results-heading">
+        <div>
+          <Table2 size={18} />
+          <h2>Task Matches</h2>
+        </div>
+        <span>{visibleResults.length} found</span>
+      </div>
+      {visibleResults.length > 0 ? (
+        <div className="search-result-grid">
+          {visibleResults.map((result) => (
+            <button
+              type="button"
+              key={result.graph.id}
+              className={`search-result-card ${result.graph.id === selectedTaskId ? "is-current" : ""}`}
+              onClick={() => onSelectTask(result.graph.id)}
+            >
+              <span className="task-icon">{getTaskCode(result.graph)}</span>
+              <span className="result-main">
+                <strong>{result.graph.name}</strong>
+                <small>{result.graph.purpose}</small>
+                <span className="match-tags">
+                  {result.matchedTerms.length > 0
+                    ? result.matchedTerms.slice(0, 4).map((term) => <em key={term}>{term}</em>)
+                    : result.graph.aliases.slice(0, 2).map((term) => <em key={term}>{term}</em>)}
+                </span>
+              </span>
+              <span className="result-score">{result.graph.id === selectedTaskId ? "Open" : "Open plan"}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-search">
+          <strong>No task match yet</strong>
+          <span>The current table still filters by the text you entered.</span>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -329,6 +412,13 @@ function LogicTable({
             </tr>
           </thead>
           <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td className="empty-row" colSpan={7}>
+                  No rows match the current filters.
+                </td>
+              </tr>
+            ) : null}
             {rows.map((row) => (
               <tr
                 key={row.id}
@@ -505,7 +595,7 @@ function SummaryPanel({
 }
 
 export function App() {
-  const [selectedTaskId] = useState(taskGraphs[0].id);
+  const [selectedTaskId, setSelectedTaskId] = useState(taskGraphs[0].id);
   const graph = taskGraphs.find((task) => task.id === selectedTaskId) ?? taskGraphs[0];
   const { completedIds, toggleCompleted, resetCompleted } = useCompletedRows(graph.id);
   const rows = useMemo(() => decorateRows(graph, completedIds), [completedIds, graph]);
@@ -513,6 +603,15 @@ export function App() {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<RowStatus | "all">("all");
   const [kindFilter, setKindFilter] = useState<RowKind | "all">("all");
+  const taskSearchResults = useMemo(() => searchTaskGraphs(taskGraphs, query), [query]);
+
+  const handleSelectTask = (taskId: string) => {
+    setSelectedTaskId(taskId);
+    setSelectedRowId("");
+    setStatusFilter("all");
+    setKindFilter("all");
+    setQuery("");
+  };
 
   useEffect(() => {
     if (!rows.some((row) => row.id === selectedRowId)) {
@@ -535,7 +634,9 @@ export function App() {
   return (
     <div className="app-frame">
       <Sidebar
-        graph={graph}
+        graphs={taskGraphs}
+        selectedTaskId={selectedTaskId}
+        onSelectTask={handleSelectTask}
         progress={progress}
         nextRows={nextRows}
         statusFilter={statusFilter}
@@ -551,9 +652,15 @@ export function App() {
           progress={progress}
           resetCompleted={resetCompleted}
         />
+        <TaskSearchPanel
+          query={query}
+          results={taskSearchResults}
+          selectedTaskId={selectedTaskId}
+          onSelectTask={handleSelectTask}
+        />
         <section className="task-summary">
           <div>
-            <span className="summary-icon">WB</span>
+            <span className="summary-icon">{getTaskCode(graph)}</span>
           </div>
           <div>
             <h2>{graph.name}</h2>

@@ -19,8 +19,17 @@ export type RequirementRow = {
 export type TaskGraph = {
   id: string;
   name: string;
+  category: string;
   purpose: string;
+  aliases: string[];
+  searchHints: string[];
   rows: RequirementRow[];
+};
+
+export type TaskSearchResult = {
+  graph: TaskGraph;
+  score: number;
+  matchedTerms: string[];
 };
 
 export type RowStatus = "complete" | "ready" | "blocked" | "optional";
