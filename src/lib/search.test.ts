@@ -52,4 +52,19 @@ describe("task search", () => {
     expect(note?.method).toContain("Ant Hill");
     expect(note?.sourceUrl).toBe("https://ringofbrodgar.com/wiki/Ant_Queen");
   });
+
+  it("expands tree product goals into planting workflows", () => {
+    const mergedGoals = mergeGoalGraphs(generatedGoals);
+    const plum = generatedGoals.find((graph) => graph.name === "Plum");
+    const rowNames = plum?.rows.map((row) => row.name) ?? [];
+
+    expect(rowNames).toContain("Plum Kernel");
+    expect(rowNames).toContain("Treeplanter's Pot");
+    expect(rowNames).toContain("Herbalist Table");
+    expect(rowNames).toContain("Harvest Plum");
+    expect(plum?.rows.find((row) => row.name === "Direct Ground Planting")?.required).toBe(false);
+    expect(plum?.rows.some((row) => row.method === "Use Plum Tree for production")).toBe(false);
+    expect(JSON.stringify(plum)).not.toMatch(/(?:requires|specific|seed[_ ]of|optional)::/i);
+    expect(searchTaskGraphs(mergedGoals, "plum seed")[0].graph.name).toBe("Plum");
+  });
 });

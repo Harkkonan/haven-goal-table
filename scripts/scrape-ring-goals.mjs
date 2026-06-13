@@ -237,11 +237,14 @@ function slugify(value) {
 }
 
 function wikiUrl(title) {
-  return `https://ringofbrodgar.com/wiki/${encodeURIComponent(title.replaceAll(" ", "_"))}`;
+  return `https://ringofbrodgar.com/wiki/${encodeURIComponent(cleanTitle(title).replaceAll(" ", "_"))}`;
 }
 
 function cleanTitle(title) {
-  return title.replace(/^Category:/, "").trim();
+  return title
+    .replace(/^Category:/i, "")
+    .replace(/^(?:requires|specific|seed[_ ]of|optional)::/i, "")
+    .trim();
 }
 
 function canonicalName(title) {
@@ -451,8 +454,8 @@ function cleanText(value) {
     .replace(/<br\s*\/?>/gi, " ")
     .replace(/<ref[^>]*>.*?<\/ref>/gis, " ")
     .replace(/<[^>]+>/g, " ")
-    .replace(/\[\[(?:requires::)?([^|\]]+)\|([^\]]+)\]\]/g, "$2")
-    .replace(/\[\[(?:requires::)?([^\]]+)\]\]/g, "$1")
+    .replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, "$2")
+    .replace(/\[\[([^\]]+)\]\]/g, (_, title) => cleanTitle(title))
     .replace(/\{\{[^{}]*\}\}/g, " ")
     .replace(/'''/g, "")
     .replace(/''/g, "")
@@ -512,7 +515,7 @@ function parseSkillPrerequisites(value) {
     .map((skill) => ({ title: skill, sourceTitle: skill, quantity: "" }));
 }
 
-function extractSectionSummary(content) {
+function extractSectionSummary(content, pageTitle = "") {
   const sectionNames = [
     "How to Acquire",
     "How to Make",
@@ -528,7 +531,12 @@ function extractSectionSummary(content) {
       continue;
     }
 
-    const summary = cleanText(match[1].split("\n").filter((line) => !line.trim().startsWith("*")).join(" "));
+    const sectionText = match[1]
+      .replace(/\{\{PAGENAME\}\}/gi, pageTitle)
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("*"))
+      .join(" ");
+    const summary = cleanText(sectionText);
     if (summary) {
       return summary.length > 280 ? `${summary.slice(0, 277)}...` : summary;
     }
@@ -537,6 +545,7 @@ function extractSectionSummary(content) {
   const prose = cleanText(
     content
       .replace(extractTemplate(content, "infobox"), "")
+      .replace(/\{\{PAGENAME\}\}/gi, pageTitle)
       .split("\n")
       .filter((line) => !line.startsWith("[[Category:") && !line.startsWith("{{GM"))
       .join(" "),
@@ -620,7 +629,345 @@ function rowId(prefix, title, index) {
   return `${prefix}-${slugify(title)}-${index}`;
 }
 
-function makeGoal(page) {
+function parsePlainRequirement(value) {
+  const linkedRequirement = extractRequirements(value)[0];
+  if (linkedRequirement) {
+    return linkedRequirement;
+  }
+
+  const title = cleanText(value);
+  if (!title || /^(none|no|unknown)$/i.test(title)) {
+    return null;
+  }
+
+  return {
+    title: canonicalName(title),
+    sourceTitle: cleanTitle(title),
+    quantity: "",
+  };
+}
+
+function isTreeOrBushTitle(title) {
+  return /\b(tree|bush)$/i.test(cleanTitle(title));
+}
+
+function getInfoboxFields(page) {
+  const infobox = extractTemplate(page.content, "infobox");
+  return infobox ? parseTemplateFields(infobox) : {};
+}
+
+function getPlantProducerKind(producerPage) {
+  if (!producerPage) {
+    return null;
+  }
+
+  const lowerContent = producerPage.content.toLowerCase();
+  const categories = extractCategories(producerPage.content);
+  const title = cleanTitle(producerPage.title);
+
+  if (lowerContent.includes("{{infobox tree") || categories.includes("Trees") || /\btree$/i.test(title)) {
+    return "tree";
+  }
+
+  if (lowerContent.includes("{{infobox bush") || categories.includes("Bush") || /\bbush$/i.test(title)) {
+    return "bush";
+  }
+
+  return null;
+}
+
+function getPlantProducerInfo(requirement, producerPagesByTitle) {
+  const producerTitle = cleanTitle(requirement.sourceTitle || requirement.title);
+  const producerPage = producerPagesByTitle.get(producerTitle);
+  const producerKind = getPlantProducerKind(producerPage);
+
+  if (!producerKind) {
+    return null;
+  }
+
+  return {
+    kind: producerKind,
+    page: producerPage,
+    title: producerTitle,
+    url: wikiUrl(producerTitle),
+  };
+}
+
+function findPlantProducer(toolRequirements, producerPagesByTitle) {
+  for (const requirement of toolRequirements) {
+    const producerInfo = getPlantProducerInfo(requirement, producerPagesByTitle);
+    if (producerInfo) {
+      return producerInfo;
+    }
+  }
+
+  return null;
+}
+
+function getPlantFacts(producerInfo, productTitle) {
+  const fields = getInfoboxFields(producerInfo.page);
+  const seedRequirement = parsePlainRequirement(fields.objectsreq ?? fields.seeds ?? fields.seed ?? "");
+  const producerTitle = producerInfo.title;
+  const isTree = producerInfo.kind === "tree";
+  const primaryFruit = cleanText(fields.tfruit ?? fields.fruitname ?? "");
+  const otherFruit = cleanText(fields.tother ?? "");
+  const productName = cleanTitle(productTitle);
+  const normalizedProduct = normalizeMaterialKey(productName);
+  let harvestQuantity = "";
+
+  if (primaryFruit && normalizeMaterialKey(primaryFruit) === normalizedProduct) {
+    harvestQuantity = cleanText(fields.tfruitqt ?? fields.fruitcount ?? "");
+  } else if (otherFruit && normalizeMaterialKey(otherFruit) === normalizedProduct) {
+    harvestQuantity = cleanText(fields.totherqt ?? "");
+  } else if (!primaryFruit && fields.fruitcount) {
+    harvestQuantity = cleanText(fields.fruitcount);
+  }
+
+  return {
+    harvestQuantity,
+    isTree,
+    producerTitle,
+    producerUrl: producerInfo.url,
+    seed: seedRequirement ?? {
+      title: `${productName} Seed`,
+      sourceTitle: `${productName} Seed`,
+      quantity: "1",
+    },
+  };
+}
+
+function plantAliasesForGoal(title, categories, producerTitle, seedTitle) {
+  const baseAliases = aliasesForGoal(title, categories, false);
+  const normalizedTitle = title.toLowerCase();
+  const plainTitle = normalizedTitle.replace(/^red\s+/, "");
+  return [
+    ...new Set([
+      ...baseAliases,
+      seedTitle.toLowerCase(),
+      `${normalizedTitle} seed`,
+      `${plainTitle} seed`,
+      `plant ${normalizedTitle}`,
+      `plant ${producerTitle.toLowerCase()}`,
+      `grow ${producerTitle.toLowerCase()}`,
+      `harvest ${normalizedTitle}`,
+      `pick ${normalizedTitle}`,
+    ]),
+  ].slice(0, 16);
+}
+
+function buildPlantProductRows({ title, sourceUrl, acquisition, producerInfo }) {
+  const facts = getPlantFacts(producerInfo, title);
+  const rows = [];
+  const seedId = "plant-seed";
+  const plantLoreId = "plant-lore";
+  const potteryId = "pottery";
+  const potId = "treeplanters-pot";
+  const mediumId = "growing-medium";
+  const waterId = "water";
+  const tableId = "herbalist-table";
+  const prepareId = "prepare-tree-pot";
+  const sproutId = "sprout-sapling";
+  const directId = "direct-ground-planting";
+  const plantId = "plant-sapling";
+  const growId = "grow-producer";
+  const harvestId = "harvest-product";
+
+  rows.push({
+    id: seedId,
+    kind: "material",
+    name: facts.seed.title,
+    order: rows.length + 1,
+    quantity: "1",
+    required: true,
+    dependsOn: [],
+    source: SOURCE,
+    sourceUrl: wikiUrl(facts.seed.sourceTitle),
+    method: `Get ${facts.seed.title} from an existing source, trade, or from the product's seed/remnant loop`,
+    details: `${facts.seed.title} is listed as the seed or planting input for ${facts.producerTitle}.`,
+  });
+
+  rows.push({
+    id: plantLoreId,
+    kind: "skill",
+    name: "Plant Lore",
+    order: rows.length + 1,
+    required: true,
+    dependsOn: [],
+    source: SOURCE,
+    sourceUrl: "https://ringofbrodgar.com/wiki/Plant_Lore",
+    method: "Learn Plant Lore for tree and bush planting",
+    details: "Plant Lore is part of the Treeplanter's Pot route for raising new trees and bushes.",
+  });
+
+  rows.push({
+    id: potteryId,
+    kind: "skill",
+    name: "Pottery",
+    order: rows.length + 1,
+    required: true,
+    dependsOn: [],
+    source: SOURCE,
+    sourceUrl: "https://ringofbrodgar.com/wiki/Pottery",
+    method: "Learn Pottery before making Treeplanter's Pots",
+    details: "Treeplanter's Pot requires Pottery and Plant Lore.",
+  });
+
+  rows.push({
+    id: potId,
+    kind: "tool",
+    name: "Treeplanter's Pot",
+    order: rows.length + 1,
+    quantity: "1",
+    required: true,
+    dependsOn: [plantLoreId, potteryId],
+    source: SOURCE,
+    sourceUrl: "https://ringofbrodgar.com/wiki/Treeplanter%27s_Pot",
+    method: "Craft and fire a Treeplanter's Pot",
+    details: "Use the pot to sprout tree and bush seeds safely before planting the sapling.",
+  });
+
+  rows.push({
+    id: mediumId,
+    kind: "material",
+    name: "Growing Medium",
+    order: rows.length + 1,
+    quantity: "4 units",
+    required: true,
+    dependsOn: [],
+    source: SOURCE,
+    sourceUrl: "https://ringofbrodgar.com/wiki/Treeplanter%27s_Pot",
+    method: "Use soil, mulch, earthworms, or bat guano",
+    details: "Treeplanter's Pots need four units of accepted growing medium.",
+  });
+
+  rows.push({
+    id: waterId,
+    kind: "material",
+    name: "Water",
+    order: rows.length + 1,
+    quantity: "1.0L",
+    required: true,
+    dependsOn: [],
+    source: SOURCE,
+    sourceUrl: "https://ringofbrodgar.com/wiki/Water",
+    method: "Fill the pot with one liter of water",
+    details: "The Treeplanter's Pot workflow requires water before the seed can sprout.",
+  });
+
+  rows.push({
+    id: tableId,
+    kind: "tool",
+    name: "Herbalist Table",
+    order: rows.length + 1,
+    quantity: "1",
+    required: true,
+    dependsOn: [],
+    source: SOURCE,
+    sourceUrl: "https://ringofbrodgar.com/wiki/Herbalist_Table",
+    method: "Place the filled pot on an Herbalist Table",
+    details: "The filled Treeplanter's Pot must sit on an Herbalist Table to sprout.",
+  });
+
+  rows.push({
+    id: prepareId,
+    kind: "action",
+    name: `Prepare ${facts.producerTitle} Pot`,
+    order: rows.length + 1,
+    required: true,
+    dependsOn: [seedId, potId, mediumId, waterId],
+    source: SOURCE,
+    sourceUrl: "https://ringofbrodgar.com/wiki/Treeplanter%27s_Pot",
+    method: `Put ${facts.seed.title}, growing medium, and water into the Treeplanter's Pot`,
+    details: "Left-click the input, then right-click the pot or water source as appropriate.",
+  });
+
+  if (facts.isTree) {
+    rows.push({
+      id: directId,
+      kind: "action",
+      name: "Direct Ground Planting",
+      order: rows.length + 1,
+      required: false,
+      dependsOn: [seedId],
+      source: SOURCE,
+      sourceUrl: facts.producerUrl,
+      method: `Optional shortcut: plant ${facts.seed.title} directly in the ground`,
+      details: `The ${facts.producerTitle} page notes that trees can be grown from seed in a Treeplanter's Pot or by direct ground planting.`,
+    });
+  }
+
+  rows.push({
+    id: sproutId,
+    kind: "action",
+    name: `Sprout ${facts.producerTitle} Sapling`,
+    order: rows.length + 1,
+    quantity: "4 in-game hours / about 73 real minutes",
+    required: true,
+    dependsOn: [prepareId, tableId],
+    source: SOURCE,
+    sourceUrl: "https://ringofbrodgar.com/wiki/Treeplanter%27s_Pot",
+    method: "Wait for the filled pot to sprout on the Herbalist Table",
+    details: "Treeplanter's Pot notes the sprouting wait and that the sapling must be planted after sprouting.",
+  });
+
+  rows.push({
+    id: plantId,
+    kind: "action",
+    name: `Plant ${facts.producerTitle} Sapling`,
+    order: rows.length + 1,
+    quantity: "Within 24 real-life hours",
+    required: true,
+    dependsOn: [sproutId],
+    source: SOURCE,
+    sourceUrl: "https://ringofbrodgar.com/wiki/Treeplanter%27s_Pot",
+    method: "Plant the sprouted sapling on valid terrain",
+    details: "The sprouted sapling dies if it is not planted within the time window.",
+  });
+
+  rows.push({
+    id: growId,
+    kind: "action",
+    name: `Grow ${facts.producerTitle}`,
+    order: rows.length + 1,
+    required: true,
+    dependsOn: [plantId],
+    source: SOURCE,
+    sourceUrl: facts.producerUrl,
+    method: `Let the ${facts.producerTitle} mature`,
+    details: `${facts.producerTitle} is the renewable producer for ${title}.`,
+  });
+
+  rows.push({
+    id: harvestId,
+    kind: "action",
+    name: `Harvest ${title}`,
+    order: rows.length + 1,
+    quantity: facts.harvestQuantity ? `Up to ${facts.harvestQuantity}` : undefined,
+    required: true,
+    dependsOn: [growId],
+    source: SOURCE,
+    sourceUrl,
+    method: acquisition || `Right-click ${facts.producerTitle} and pick ${title}`,
+    details: `${facts.producerTitle} produces ${title}; harvested materials replenish over time when the producer remains standing.`,
+  });
+
+  rows.push({
+    id: "goal-complete",
+    kind: "action",
+    name: `Get ${title}`,
+    order: rows.length + 1,
+    required: true,
+    dependsOn: [harvestId],
+    source: SOURCE,
+    sourceUrl,
+    method: `Keep or use the harvested ${title}`,
+    details: `${SOURCE} lists ${title} as produced by ${facts.producerTitle}.`,
+  });
+
+  return rows;
+}
+
+function makeGoal(page, producerPagesByTitle = new Map()) {
   const infobox = extractTemplate(page.content, "infobox");
   if (!infobox) {
     return null;
@@ -633,13 +980,43 @@ function makeGoal(page) {
   const title = cleanTitle(page.title);
   const sourceUrl = wikiUrl(page.title);
   const menuPath = extractGameMenu(page.content);
-  const acquisition = extractSectionSummary(page.content);
+  const acquisition = extractSectionSummary(page.content, title);
 
   const skillRequirements = isSkill
     ? parseSkillPrerequisites(fields.skills_required)
     : extractRequirements(fields.skillreq);
   const materialRequirements = extractRequirements(fields.objectsreq);
   const toolRequirements = extractRequirements(fields.producedby).filter((requirement) => requirement.title !== "Hand");
+  const plantProducerInfo = findPlantProducer(toolRequirements, producerPagesByTitle);
+
+  if (plantProducerInfo) {
+    const plantRows = buildPlantProductRows({
+      title,
+      sourceUrl,
+      acquisition,
+      producerInfo: plantProducerInfo,
+    });
+    const plantFacts = getPlantFacts(plantProducerInfo, title);
+
+    return {
+      id: `ring-${slugify(title)}`,
+      name: title,
+      category: categoryForGoal(categories, "Plant product"),
+      purpose: `Grow ${plantProducerInfo.title} and harvest ${title} using Ring of Brodgar tree and bush planting notes.`,
+      aliases: plantAliasesForGoal(title, categories, plantProducerInfo.title, plantFacts.seed.title),
+      searchHints: [
+        `produced by ${plantProducerInfo.title}`,
+        `grown from ${plantFacts.seed.title}`,
+        `harvest ${title}`,
+        `plant ${plantProducerInfo.title}`,
+        cleanText(fields.producedby ?? ""),
+        acquisition,
+        ...categories,
+      ].filter(Boolean).slice(0, 10),
+      rows: plantRows,
+    };
+  }
+
   const rows = [];
 
   for (const requirement of skillRequirements) {
@@ -759,8 +1136,28 @@ async function main() {
   }
 
   const pages = await getPages([...allTitles].sort((a, b) => a.localeCompare(b)));
+  const producerTitles = new Set();
+
+  for (const page of pages) {
+    const fields = getInfoboxFields(page);
+    for (const requirement of extractRequirements(fields.producedby)) {
+      if (isTreeOrBushTitle(requirement.title)) {
+        producerTitles.add(cleanTitle(requirement.sourceTitle || requirement.title));
+      }
+    }
+  }
+
+  const pageTitles = new Set(pages.map((page) => cleanTitle(page.title)));
+  const producerPages = await getPages(
+    [...producerTitles]
+      .filter((title) => title && !pageTitles.has(title))
+      .sort((a, b) => a.localeCompare(b)),
+  );
+  const producerPagesByTitle = new Map(
+    [...pages, ...producerPages].map((page) => [cleanTitle(page.title), page]),
+  );
   const goals = pages
-    .map(makeGoal)
+    .map((page) => makeGoal(page, producerPagesByTitle))
     .filter(Boolean)
     .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
 
@@ -771,6 +1168,7 @@ async function main() {
     generatedAt: new Date().toISOString(),
     categories: CATEGORY_SEEDS,
     categoryCounts: Object.fromEntries(titlesByCategory),
+    plantProducerCount: producerPages.length,
     goalCount: goals.length,
     goals,
   };

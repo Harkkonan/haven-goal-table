@@ -145,10 +145,6 @@ function getDetailPrimary(row: RequirementView) {
   return "-";
 }
 
-function isWikiAcquisitionNote(row: RequirementView) {
-  return row.name === "Wiki Acquisition Notes";
-}
-
 function CompletionButton({
   row,
   onToggle,
@@ -465,7 +461,7 @@ function LogicTable({
                 <td className="detail-cell">
                   <strong>{getDetailPrimary(row)}</strong>
                   <span>{row.method}</span>
-                  {isWikiAcquisitionNote(row) && row.sourceUrl ? (
+                  {row.sourceUrl ? (
                     <a
                       className="inline-source-link"
                       href={row.sourceUrl}
